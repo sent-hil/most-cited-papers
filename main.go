@@ -2,17 +2,16 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // Paper represents a scientific paper with its title and citation count
@@ -20,6 +19,11 @@ type Paper struct {
 	Title     string
 	URL       string
 	Citations int
+}
+
+// CacheDB handles interactions with the SQLite cache
+type CacheDB struct {
+	db *sql.DB
 }
 
 func main() {
@@ -30,18 +34,59 @@ func main() {
 	}
 
 	filePath := os.Args[1]
+
+	// Initialize cache
+	cache, err := initCache("paper_cache.db")
+	if err != nil {
+		log.Fatalf("Failed to initialize cache: %v", err)
+	}
+	defer cache.close()
+
 	papers := parseMarkdownPapers(filePath)
 
 	// Process each paper to get citation count
 	for i := range papers {
 		fmt.Printf("Processing: %s\n", papers[i].Title)
 
-		// Add a delay to avoid being rate-limited
-		time.Sleep(2 * time.Second)
-
-		err := getScholarCitations(&papers[i])
+		// Check if we have this paper in cache
+		cached, err := cache.getCitation(papers[i].URL)
 		if err != nil {
-			log.Printf("Error processing '%s': %v\n", papers[i].Title, err)
+			log.Printf("Error checking cache for '%s': %v\n", papers[i].URL, err)
+		}
+
+		if cached != nil {
+			// Use cached data
+			fmt.Printf("  Using cached data for %s\n", papers[i].URL)
+			papers[i].Citations = cached.Citations
+		} else {
+			// Add a delay to avoid being rate-limited
+			time.Sleep(2 * time.Second)
+
+			// Fetch new data
+			if isArxivURL(papers[i].URL) {
+				// For arXiv papers, try to follow links
+				err := getArxivCitations(&papers[i])
+				if err != nil {
+					log.Printf("Error processing arXiv paper '%s': %v\n", papers[i].Title, err)
+					// Fall back to direct search if following links fails
+					err = searchScholarByTitle(&papers[i])
+					if err != nil {
+						log.Printf("Fallback search also failed for '%s': %v\n", papers[i].Title, err)
+					}
+				}
+			} else {
+				// For non-arXiv papers, directly search by title
+				err := searchScholarByTitle(&papers[i])
+				if err != nil {
+					log.Printf("Error searching Google Scholar for '%s': %v\n", papers[i].Title, err)
+				}
+			}
+
+			// Cache the result
+			err = cache.saveCitation(papers[i])
+			if err != nil {
+				log.Printf("Error caching data for '%s': %v\n", papers[i].URL, err)
+			}
 		}
 	}
 
@@ -59,6 +104,73 @@ func main() {
 	}
 }
 
+// isArxivURL checks if a URL is from arXiv
+func isArxivURL(url string) bool {
+	return strings.Contains(url, "arxiv.org")
+}
+
+// initCache initializes the SQLite database for caching
+func initCache(dbPath string) (*CacheDB, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create table if it doesn't exist
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS paper_cache (
+		url TEXT PRIMARY KEY,
+		title TEXT NOT NULL,
+		citations INTEGER NOT NULL,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &CacheDB{db: db}, nil
+}
+
+// close closes the database connection
+func (c *CacheDB) close() error {
+	return c.db.Close()
+}
+
+// getCitation retrieves a paper from cache by URL
+func (c *CacheDB) getCitation(url string) (*Paper, error) {
+	query := `SELECT title, citations FROM paper_cache WHERE url = ?`
+
+	var title string
+	var citations int
+	err := c.db.QueryRow(query, url).Scan(&title, &citations)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Not in cache
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &Paper{
+		Title:     title,
+		URL:       url,
+		Citations: citations,
+	}, nil
+}
+
+// saveCitation saves a paper to the cache
+func (c *CacheDB) saveCitation(paper Paper) error {
+	// Insert or replace existing entry
+	query := `INSERT OR REPLACE INTO paper_cache (url, title, citations) VALUES (?, ?, ?)`
+
+	_, err := c.db.Exec(query, paper.URL, paper.Title, paper.Citations)
+	return err
+}
+
 // parseMarkdownPapers extracts paper information from a markdown file
 func parseMarkdownPapers(filePath string) []Paper {
 	file, err := os.Open(filePath)
@@ -71,8 +183,8 @@ func parseMarkdownPapers(filePath string) []Paper {
 	scanner := bufio.NewScanner(file)
 
 	// Regular expression to extract paper title and URL
-	// Matches markdown list items with title and paper link
-	titleRegex := regexp.MustCompile(`-\s+\([^)]+\)\s+([^\[]+)\[\[paper\]\(([^)]+)\)`)
+	// Matches simplified markdown format: "- Title [[paper](url)]"
+	titleRegex := regexp.MustCompile(`-\s+([^\[]+)\[\[paper\]\(([^)]+)\)`)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -96,10 +208,10 @@ func parseMarkdownPapers(filePath string) []Paper {
 	return papers
 }
 
-// getScholarCitations fetches the citation count for a paper
-func getScholarCitations(paper *Paper) error {
-	// Step 1: Fetch the paper page
-	scholarURL, err := getGoogleScholarURL(paper.URL)
+// getArxivCitations fetches citations by accessing arXiv and following Google Scholar link
+func getArxivCitations(paper *Paper) error {
+	// Delegate to the scholar package
+	scholarURL, err := GetGoogleScholarURL(paper.URL)
 	if err != nil {
 		return fmt.Errorf("failed to get Google Scholar URL: %v", err)
 	}
@@ -108,8 +220,7 @@ func getScholarCitations(paper *Paper) error {
 		return fmt.Errorf("Google Scholar link not found")
 	}
 
-	// Step 2: Fetch the Google Scholar page
-	citations, err := fetchCitationsFromScholar(scholarURL)
+	citations, err := FetchCitationsFromScholar(scholarURL)
 	if err != nil {
 		return err
 	}
@@ -118,117 +229,13 @@ func getScholarCitations(paper *Paper) error {
 	return nil
 }
 
-// getGoogleScholarURL fetches the paper page and extracts the Google Scholar URL
-func getGoogleScholarURL(paperURL string) (string, error) {
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", paperURL, nil)
+// searchScholarByTitle searches Google Scholar directly using the paper title
+func searchScholarByTitle(paper *Paper) error {
+	citations, err := SearchGoogleScholar(paper.Title)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("failed to fetch paper page: %s", resp.Status)
-	}
-
-	// Parse the HTML response
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	// Different sites have different ways to link to Google Scholar
-	// Try different selector patterns
-
-	// ACL Anthology pattern
-	scholarURL, exists := doc.Find("a[href*='scholar.google.com']").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// arXiv pattern
-	scholarURL, exists = doc.Find("a.gs").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// Some arXiv pages have a different pattern
-	scholarURL, exists = doc.Find("a[href*='scholar.google']").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// If direct link isn't found, we can try to construct it for arXiv
-	if strings.Contains(paperURL, "arxiv.org") {
-		// Extract arXiv ID
-		idRegex := regexp.MustCompile(`arxiv\.org/abs/([0-9v.]+)`)
-		matches := idRegex.FindStringSubmatch(paperURL)
-		if len(matches) >= 2 {
-			arxivID := matches[1]
-			// Construct Scholar URL with arXiv ID
-			return fmt.Sprintf("https://scholar.google.com/scholar?q=arxiv:%s", arxivID), nil
-		}
-	}
-
-	return "", nil
+	paper.Citations = citations
+	return nil
 }
-
-// fetchCitationsFromScholar gets the citation count from a Google Scholar page
-func fetchCitationsFromScholar(scholarURL string) (int, error) {
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", scholarURL, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("failed to fetch Google Scholar page: %s", resp.Status)
-	}
-
-	// Parse the HTML response
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	// Look for citation count on the page
-	var citations int
-
-	// Pattern: "Cited by X" link
-	doc.Find(".gs_fl a").Each(func(_ int, s *goquery.Selection) {
-		text := s.Text()
-		if strings.HasPrefix(text, "Cited by") {
-			citationText := strings.TrimPrefix(text, "Cited by ")
-			count, err := strconv.Atoi(citationText)
-			if err == nil {
-				citations = count
-			}
-		}
-	})
-
-	return citations, nil
-}
-
