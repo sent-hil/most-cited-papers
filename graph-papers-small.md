@@ -1,2 +1,3 @@
--  Knowledge Graph Based Synthetic Corpus Generation for Knowledge-Enhanced Language Model Pre-training [[paper](https://aclanthology.org/2021.naacl-main.278/)][[code](https://github.com/google-research-datasets/KELM-corpus)]
--  Can Language Models Solve Graph Problems in Natural Language? [[paper](https://arxiv.org/abs/2305.10037)][[code](https://github.com/Arthur-Heng/NLGraph)]![GitHub Repo stars](https://img.shields.io/github/stars/Arthur-Heng/NLGraph?style=social)
+- GIANT: Node Feature Extraction by Self-Supervised Multi-scale Neighborhood Prediction [[paper](https://arxiv.org/abs/2111.00064)][[code](https://github.com/amzn/pecos/tree/mainline/examples/giant-xrt)]
+- Edgeformers: Graph-Empowered Transformers for Representation Learning on Textual-Edge Networks [[paper](https://arxiv.org/abs/2302.11050)][[code](https://github.com/PeterGriffinJin/Edgeformers)]
+- GALM: Graph-Aware Language Model Pre-Training on a Large Graph Corpus Can Help Multiple Graph Applications [[paper](https://arxiv.org/abs/2306.02592)]
