@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"html/template"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -13,7 +15,6 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/senthil/most-cited-papers/server"
 )
 
 // Paper represents a scientific paper with its title and citation count
@@ -156,9 +157,28 @@ func main() {
 	}
 }
 
+// UIServer handles the web interface
+type UIServer struct {
+	db         *sql.DB
+	tmpl       *template.Template
+	dbFilePath string
+}
+
+// PaperView represents a paper for display in the UI
+type PaperView struct {
+	Title            string
+	URL              string
+	ArxivAbsURL      string
+	GoogleScholarURL string
+	ArxivSummary     string
+	Citations        int
+	LastUpdate       string
+}
+
 // runWebServer starts the web UI server
 func runWebServer(dbPath, addr string) {
-	srv, err := server.NewUIServer(dbPath)
+	// Create a new UI server
+	srv, err := NewUIServer(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
@@ -172,6 +192,202 @@ func runWebServer(dbPath, addr string) {
 		log.Fatalf("Server error: %v", err)
 	}
 }
+
+// NewUIServer creates a new UI server instance
+func NewUIServer(dbFilePath string) (*UIServer, error) {
+	// Connect to the database
+	db, err := sql.Open("sqlite3", dbFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse templates
+	tmpl, err := template.New("index").Parse(indexTemplate)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &UIServer{
+		db:         db,
+		tmpl:       tmpl,
+		dbFilePath: dbFilePath,
+	}, nil
+}
+
+// Close closes the database connection
+func (s *UIServer) Close() error {
+	return s.db.Close()
+}
+
+// Start starts the HTTP server
+func (s *UIServer) Start(addr string) error {
+	http.HandleFunc("/", s.handleIndex)
+	http.HandleFunc("/refresh", s.handleRefresh)
+	http.HandleFunc("/tailwind.css", s.serveTailwind)
+
+	log.Printf("Starting server on %s", addr)
+	return http.ListenAndServe(addr, nil)
+}
+
+// handleIndex handles the main page request
+func (s *UIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	papers, err := s.getPapers()
+	if err != nil {
+		http.Error(w, "Failed to fetch papers: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		Papers []PaperView
+		Count  int
+	}{
+		Papers: papers,
+		Count:  len(papers),
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	if err := s.tmpl.Execute(w, data); err != nil {
+		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleRefresh handles the refresh action
+func (s *UIServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	// This is a simple redirect back to the index page
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// serveTailwind serves the CSS
+func (s *UIServer) serveTailwind(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css")
+	w.Write([]byte("/* Using Tailwind CDN instead */"))
+}
+
+// getPapers retrieves papers from the database
+func (s *UIServer) getPapers() ([]PaperView, error) {
+	query := `
+		SELECT title, url, citations, arxiv_abs_url, google_scholar_url, arxiv_summary, timestamp
+		FROM paper_cache
+		ORDER BY CASE WHEN citations IS NULL THEN 1 ELSE 0 END, citations DESC
+	`
+
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var papers []PaperView
+	for rows.Next() {
+		var paper PaperView
+		var timestamp string
+		var citations sql.NullInt64
+		var arxivAbsURL sql.NullString
+		var googleScholarURL sql.NullString
+		var arxivSummary sql.NullString
+
+		if err := rows.Scan(&paper.Title, &paper.URL, &citations, &arxivAbsURL, &googleScholarURL, &arxivSummary, &timestamp); err != nil {
+			return nil, err
+		}
+
+		if citations.Valid {
+			paper.Citations = int(citations.Int64)
+		}
+
+		if arxivAbsURL.Valid {
+			paper.ArxivAbsURL = arxivAbsURL.String
+		}
+
+		if googleScholarURL.Valid {
+			paper.GoogleScholarURL = googleScholarURL.String
+		}
+
+		if arxivSummary.Valid {
+			paper.ArxivSummary = arxivSummary.String
+		}
+
+		// Format the timestamp
+		t, err := time.Parse("2006-01-02 15:04:05", timestamp)
+		if err == nil {
+			paper.LastUpdate = t.Format("Jan 02, 2006 15:04")
+		} else {
+			paper.LastUpdate = timestamp
+		}
+
+		papers = append(papers, paper)
+	}
+
+	return papers, nil
+}
+
+// indexTemplate is the HTML template for the index page
+const indexTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper Citations Database</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-6 text-center">Paper Citations Database</h1>
+        <div class="mb-4 flex justify-between items-center">
+            <p class="text-gray-600">Found {{.Count}} papers</p>
+            <a href="/refresh" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                Refresh Data
+            </a>
+        </div>
+        <div class="bg-white shadow-md rounded-lg overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Citations</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Links</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Updated</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {{range .Papers}}
+                    <tr>
+                        <td class="px-6 py-4 whitespace-normal">
+                            <div class="text-sm font-medium text-gray-900">{{.Title}}</div>
+                            {{if .ArxivSummary}}
+                            <details class="mt-1">
+                                <summary class="text-xs text-blue-500 cursor-pointer">Show Abstract</summary>
+                                <p class="text-xs text-gray-500 mt-1 max-w-2xl">{{.ArxivSummary}}</p>
+                            </details>
+                            {{end}}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {{if eq .Citations 0}}
+                            <span class="text-sm text-gray-500">N/A</span>
+                            {{else}}
+                            <span class="text-sm text-gray-900">{{.Citations}}</span>
+                            {{end}}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            <a href="{{.URL}}" target="_blank" class="text-blue-600 hover:text-blue-900 mr-2">Paper</a>
+                            {{if .ArxivAbsURL}}
+                            <a href="{{.ArxivAbsURL}}" target="_blank" class="text-blue-600 hover:text-blue-900 mr-2">arXiv</a>
+                            {{end}}
+                            {{if .GoogleScholarURL}}
+                            <a href="{{.GoogleScholarURL}}" target="_blank" class="text-blue-600 hover:text-blue-900">Scholar</a>
+                            {{end}}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {{.LastUpdate}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>`
 
 // initCache initializes the SQLite database for caching
 func initCache(dbPath string) (*CacheDB, error) {
