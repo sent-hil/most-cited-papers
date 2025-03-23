@@ -1,4 +1,4 @@
-module github.com/sent-hil/google-scholar-search/server
+module github.com/sent-hil/most-cited-papers/server
 
 go 1.24.1
 
