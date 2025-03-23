@@ -216,8 +216,14 @@ const indexTemplate = `<!DOCTYPE html>
                 {{if .ArxivSummary}}
                 <div class="border-t border-gray-200">
                     <div class="p-6">
-                        <h3 class="text-sm font-medium text-gray-500 mb-2">Abstract</h3>
-                        <p class="text-gray-700">{{.ArxivSummary}}</p>
+                        <details>
+                            <summary class="text-sm font-medium text-gray-500 cursor-pointer hover:text-gray-700">
+                                Abstract (click to expand)
+                            </summary>
+                            <div class="mt-2 text-gray-700">
+                                {{.ArxivSummary}}
+                            </div>
+                        </details>
                     </div>
                 </div>
                 {{end}}
