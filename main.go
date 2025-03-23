@@ -31,48 +31,58 @@ type CacheDB struct {
 }
 
 func main() {
-	// Define command-line flags
-	dbPath := flag.String("db", "paper_cache.db", "Path to SQLite database file")
+	// Parse command line flags
+	inputFile := flag.String("input", "", "Input markdown file containing paper titles")
+	outputFile := flag.String("output", "", "Output markdown file (default: input with -with-citations suffix)")
+	force := flag.Bool("force", false, "Force a fresh search, bypassing cache")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
-	// Check if file path is provided
-	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("Usage: go run *.go [options] <path-to-markdown-file>")
-		fmt.Println("Options:")
-		fmt.Println("  -db=<path>      Path to SQLite database file (default: paper_cache.db)")
+	// Set debug mode for Google Scholar functions
+	SetDebugMode(*debug)
+
+	// Print usage if no input file specified
+	if *inputFile == "" {
+		fmt.Println("Usage: go run *.go -input <input.md> [-output <output.md>] [-force] [-debug]")
+		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	filePath := args[0]
-
 	// Initialize cache
-	cache, err := initCache(*dbPath)
+	cache, err := initCache("paper_cache.db")
 	if err != nil {
 		log.Fatalf("Failed to initialize cache: %v", err)
 	}
 	defer cache.close()
 
-	papers := parseMarkdownPapers(filePath)
+	papers := parseMarkdownPapers(*inputFile)
 
 	// Process each paper to get citation count
 	for i := range papers {
 		fmt.Printf("Processing: %s\n", papers[i].Title)
 
-		// Check if we have this paper in cache
-		cached, err := cache.getCitation(papers[i].URL)
-		if err != nil {
-			log.Printf("Error checking cache for '%s': %v\n", papers[i].URL, err)
+		// Check if we have this paper in cache and force flag is not set
+		var cached *Paper
+		if !*force {
+			cached, err = cache.getCitation(papers[i].URL)
+			if err != nil {
+				log.Printf("Error checking cache for '%s': %v\n", papers[i].URL, err)
+			}
 		}
 
-		if cached != nil {
+		if cached != nil && !*force {
 			// Use cached data
-			fmt.Printf("  Using cached data for %s\n", papers[i].URL)
+			if *debug {
+				fmt.Printf("  Using cached data for %s\n", papers[i].URL)
+			}
 			papers[i].Citations = cached.Citations
 			papers[i].ArxivAbsURL = cached.ArxivAbsURL
 			papers[i].GoogleScholarURL = cached.GoogleScholarURL
 			papers[i].ArxivSummary = cached.ArxivSummary
 		} else {
+			if *force {
+				fmt.Printf("  Force flag set, performing fresh search for %s\n", papers[i].URL)
+			}
 			// Add a delay to avoid being rate-limited
 			time.Sleep(2 * time.Second)
 
@@ -90,7 +100,9 @@ func main() {
 				}
 			} else {
 				// For non-arXiv papers or arXiv PDF links, directly search by title
-				log.Printf("Using title search for '%s'\n", papers[i].Title)
+				if *debug {
+					log.Printf("Using title search for '%s'\n", papers[i].Title)
+				}
 				err := processNonArxivPaper(&papers[i])
 				if err != nil {
 					log.Printf("Error searching Google Scholar for '%s': %v\n", papers[i].Title, err)
@@ -314,7 +326,7 @@ func processArxivPaper(paper *Paper) error {
 
 // processNonArxivPaper searches Google Scholar directly using the paper title
 func processNonArxivPaper(paper *Paper) error {
-	// If it's an arXiv URL, store the abstract URL and get the summary
+	// Try to get abstract from different sources in order of preference
 	if IsArxivURL(paper.URL) {
 		if IsArxivPDF(paper.URL) {
 			paper.ArxivAbsURL = ConvertPDFtoAbsURL(paper.URL)
@@ -329,10 +341,49 @@ func processNonArxivPaper(paper *Paper) error {
 				paper.ArxivSummary = summary
 			}
 		}
+	} else if IsACLURL(paper.URL) {
+		// Try to get abstract from ACL Anthology
+		summary, err := GetACLAbstract(paper.URL)
+		if err == nil && summary != "" {
+			paper.ArxivSummary = summary
+		}
 	}
 
-	// Search Google Scholar by title
-	scholarURL, citationPtr, _ := SearchGoogleScholar(paper.Title)
+	// Get authors from the appropriate source
+	authors := []string{}
+	if IsACLURL(paper.URL) {
+		// Try to get authors from ACL page
+		aclAuthors, err := GetACLAuthors(paper.URL)
+		if err == nil && len(aclAuthors) > 0 {
+			authors = aclAuthors
+		}
+	}
+
+	// If we couldn't get authors from ACL, try to extract from title
+	if len(authors) == 0 {
+		titleParts := strings.Split(paper.Title, " - ")
+		if len(titleParts) > 1 {
+			authorPart := titleParts[0]
+			// Handle "et al." case
+			if strings.Contains(authorPart, "et al.") {
+				authors = append(authors, strings.TrimSpace(strings.ReplaceAll(authorPart, "et al.", "")))
+			} else {
+				// Handle multiple authors case
+				authorList := strings.Split(authorPart, ",")
+				for _, author := range authorList {
+					author = strings.TrimSpace(author)
+					// Remove "and" from the last author
+					author = strings.TrimPrefix(author, "and ")
+					if author != "" {
+						authors = append(authors, author)
+					}
+				}
+			}
+		}
+	}
+
+	// Search Google Scholar by title and authors
+	scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
 
 	// Store the Google Scholar URL
 	paper.GoogleScholarURL = scholarURL
@@ -341,7 +392,11 @@ func processNonArxivPaper(paper *Paper) error {
 	if citationPtr != nil {
 		paper.Citations = *citationPtr
 	}
-	// Otherwise citations will remain nil
+
+	// If we don't have an abstract from other sources but got one from Google Scholar, use that
+	if paper.ArxivSummary == "" && scholarAbstract != "" {
+		paper.ArxivSummary = scholarAbstract
+	}
 
 	return nil
 }

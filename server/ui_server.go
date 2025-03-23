@@ -19,10 +19,13 @@ type UIServer struct {
 
 // PaperView represents a paper for view in the UI
 type PaperView struct {
-	Title      string
-	URL        string
-	Citations  int
-	LastUpdate string
+	Title            string
+	URL              string
+	ArxivAbsURL      string
+	GoogleScholarURL string
+	ArxivSummary     string
+	Citations        int
+	LastUpdate       string
 }
 
 // NewUIServer creates a new UI server
@@ -101,13 +104,14 @@ func (s *UIServer) serveTailwind(w http.ResponseWriter, r *http.Request) {
 // getPapers fetches all papers from the database
 func (s *UIServer) getPapers() ([]PaperView, error) {
 	query := `
-		SELECT title, url, citations, timestamp
+		SELECT title, url, citations, arxiv_abs_url, google_scholar_url, timestamp, arxiv_summary
 		FROM paper_cache
-		ORDER BY citations DESC
+		ORDER BY CASE WHEN citations IS NULL THEN 1 ELSE 0 END, citations DESC
 	`
 
 	rows, err := s.db.Query(query)
 	if err != nil {
+		log.Printf("Error querying papers: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -116,9 +120,33 @@ func (s *UIServer) getPapers() ([]PaperView, error) {
 	for rows.Next() {
 		var paper PaperView
 		var timestamp string
+		var arxivAbsURL sql.NullString
+		var googleScholarURL sql.NullString
+		var arxivSummary sql.NullString
+		var citations sql.NullInt64
 
-		if err := rows.Scan(&paper.Title, &paper.URL, &paper.Citations, &timestamp); err != nil {
+		if err := rows.Scan(&paper.Title, &paper.URL, &citations, &arxivAbsURL, &googleScholarURL, &timestamp, &arxivSummary); err != nil {
+			log.Printf("Error scanning row: %v", err)
 			return nil, err
+		}
+
+		if arxivAbsURL.Valid {
+			paper.ArxivAbsURL = arxivAbsURL.String
+		}
+
+		if googleScholarURL.Valid {
+			paper.GoogleScholarURL = googleScholarURL.String
+		}
+
+		if arxivSummary.Valid {
+			paper.ArxivSummary = arxivSummary.String
+			log.Printf("Found abstract for paper: %s (length: %d)", paper.Title, len(paper.ArxivSummary))
+		} else {
+			log.Printf("No abstract found for paper: %s", paper.Title)
+		}
+
+		if citations.Valid {
+			paper.Citations = int(citations.Int64)
 		}
 
 		// Parse timestamp and format it for display
@@ -133,9 +161,11 @@ func (s *UIServer) getPapers() ([]PaperView, error) {
 	}
 
 	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating rows: %v", err)
 		return nil, err
 	}
 
+	log.Printf("Total papers loaded: %d", len(papers))
 	return papers, nil
 }
 
@@ -160,43 +190,39 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
         </header>
 
-        <div class="bg-white shadow-md rounded-lg overflow-hidden">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Title
-                        </th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Citations
-                        </th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Last Updated
-                        </th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Actions
-                        </th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    {{range .Papers}}
-                    <tr class="hover:bg-gray-50">
-                        <td class="px-6 py-4 whitespace-normal">
-                            <div class="text-sm font-medium text-gray-900">{{.Title}}</div>
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-lg font-bold text-gray-900">{{.Citations}}</div>
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-sm text-gray-500">{{.LastUpdate}}</div>
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                            <a href="{{.URL}}" target="_blank" class="text-blue-600 hover:text-blue-900">View Paper</a>
-                        </td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
+        <div class="space-y-4">
+            {{range .Papers}}
+            <div class="bg-white shadow-md rounded-lg overflow-hidden">
+                <div class="p-6">
+                    <div class="flex justify-between items-start">
+                        <div class="flex-1">
+                            <h2 class="text-xl font-semibold text-gray-900 mb-2">{{.Title}}</h2>
+                            <div class="flex items-center space-x-4 text-sm text-gray-600">
+                                <span>Citations: {{if .Citations}}{{.Citations}}{{else}}N/A{{end}}</span>
+                                <span>Last Updated: {{.LastUpdate}}</span>
+                            </div>
+                        </div>
+                        <div class="flex space-x-4">
+                            <a href="{{.URL}}" target="_blank" class="text-gray-600 hover:text-gray-900">Paper</a>
+                            {{if .ArxivAbsURL}}
+                            <a href="{{.ArxivAbsURL}}" target="_blank" class="text-gray-600 hover:text-gray-900">arXiv</a>
+                            {{end}}
+                            {{if .GoogleScholarURL}}
+                            <a href="{{.GoogleScholarURL}}" target="_blank" class="text-gray-600 hover:text-gray-900">Scholar</a>
+                            {{end}}
+                        </div>
+                    </div>
+                </div>
+                {{if .ArxivSummary}}
+                <div class="border-t border-gray-200">
+                    <div class="p-6">
+                        <h3 class="text-sm font-medium text-gray-500 mb-2">Abstract</h3>
+                        <p class="text-gray-700">{{.ArxivSummary}}</p>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
         </div>
     </div>
 </body>

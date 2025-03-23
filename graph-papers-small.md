@@ -1,3 +1,1 @@
-- GIANT: Node Feature Extraction by Self-Supervised Multi-scale Neighborhood Prediction [[paper](https://arxiv.org/abs/2111.00064)][[code](https://github.com/amzn/pecos/tree/mainline/examples/giant-xrt)]
-- Edgeformers: Graph-Empowered Transformers for Representation Learning on Textual-Edge Networks [[paper](https://arxiv.org/abs/2302.11050)][[code](https://github.com/PeterGriffinJin/Edgeformers)]
-- GALM: Graph-Aware Language Model Pre-Training on a Large Graph Corpus Can Help Multiple Graph Applications [[paper](https://arxiv.org/abs/2306.02592)]
+- Graph Language Models [[paper](https://aclanthology.org/2024.acl-long.245/)][[code](https://github.com/Heidelberg-NLP/GraphLanguageModels)]![GitHub Repo stars](https://img.shields.io/github/stars/Heidelberg-NLP/GraphLanguageModels?style=social)
