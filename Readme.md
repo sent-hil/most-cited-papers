@@ -38,6 +38,12 @@ This will:
 - Fetch citation counts from Google Scholar
 - Display results sorted by citation count
 
+### Tests
+
+```
+go test -v
+```
+
 ### Web UI Server
 ```
 go run ui_server.go server_main.go [-db=path/to/database.db] -addr=9001
