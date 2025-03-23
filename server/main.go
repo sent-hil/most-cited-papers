@@ -18,7 +18,6 @@ func main() {
 	}
 	defer server.Close()
 
-	// Start the server
 	log.Printf("Starting UI server at %s", *addr)
 	log.Printf("Database: %s", *dbPath)
 	log.Printf("Open your browser at http://localhost%s", *addr)

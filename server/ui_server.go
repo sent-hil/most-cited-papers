@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +80,7 @@ func (s *UIServer) Start(addr string) error {
 	http.HandleFunc("/api/papers", s.handlePapersAPI)
 	http.HandleFunc("/refresh", s.handleRefresh)
 	http.HandleFunc("/tailwind.css", s.serveTailwind)
+	http.HandleFunc("/static/js/", s.serveStaticJS)
 
 	log.Printf("Starting server on %s", addr)
 	return http.ListenAndServe(addr, nil)
@@ -293,6 +295,23 @@ func (s *UIServer) getPapers(page, pageSize int, searchQuery string) ([]PaperVie
 
 	log.Printf("Loaded %d papers (page %d, total %d, search: %q)", len(papers), page, total, searchQuery)
 	return papers, total, nil
+}
+
+// serveStaticJS serves static JavaScript files
+func (s *UIServer) serveStaticJS(w http.ResponseWriter, r *http.Request) {
+	// Get the file path from the URL
+	filePath := r.URL.Path[len("/static/js/"):]
+
+	// Read the file from the current directory
+	content, err := os.ReadFile("static/js/" + filePath)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	// Set the content type
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Write(content)
 }
 
 // No longer needed as we're using the Tailwind CDN
