@@ -5,6 +5,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -26,6 +28,16 @@ type PaperView struct {
 	ArxivSummary     string
 	Citations        int
 	LastUpdate       string
+	FirstSentence    string
+}
+
+// getFirstSentence returns the first sentence of a text
+func getFirstSentence(text string) string {
+	sentences := strings.Split(text, ".")
+	if len(sentences) > 0 {
+		return strings.TrimSpace(sentences[0]) + "."
+	}
+	return text
 }
 
 // NewUIServer creates a new UI server
@@ -36,8 +48,18 @@ func NewUIServer(dbFilePath string) (*UIServer, error) {
 		return nil, err
 	}
 
-	// Parse templates
-	tmpl, err := template.New("index").Parse(indexTemplate)
+	// Create template with custom functions
+	funcMap := template.FuncMap{
+		"add": func(a, b int) int {
+			return a + b
+		},
+		"subtract": func(a, b int) int {
+			return a - b
+		},
+	}
+
+	// Parse template with custom functions
+	tmpl, err := template.New("index").Funcs(funcMap).Parse(indexTemplate)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -67,18 +89,39 @@ func (s *UIServer) Close() error {
 
 // handleIndex handles the index page
 func (s *UIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	papers, err := s.getPapers()
+	// Parse page parameter from query string
+	page := 1
+	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+
+	const pageSize = 25
+	papers, total, err := s.getPapers(page, pageSize)
 	if err != nil {
 		http.Error(w, "Failed to fetch papers: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	// Calculate pagination info
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
 	data := struct {
-		Papers []PaperView
-		Count  int
+		Papers      []PaperView
+		Count       int
+		CurrentPage int
+		TotalPages  int
+		PageSize    int
 	}{
-		Papers: papers,
-		Count:  len(papers),
+		Papers:      papers,
+		Count:       total,
+		CurrentPage: page,
+		TotalPages:  totalPages,
+		PageSize:    pageSize,
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -101,18 +144,31 @@ func (s *UIServer) serveTailwind(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("/* Using Tailwind CDN instead */"))
 }
 
-// getPapers fetches all papers from the database
-func (s *UIServer) getPapers() ([]PaperView, error) {
+// getPapers fetches all papers from the database with pagination
+func (s *UIServer) getPapers(page, pageSize int) ([]PaperView, int, error) {
+	// Get total count
+	var total int
+	countQuery := `SELECT COUNT(*) FROM paper_cache`
+	if err := s.db.QueryRow(countQuery).Scan(&total); err != nil {
+		log.Printf("Error getting total count: %v", err)
+		return nil, 0, err
+	}
+
+	// Calculate offset
+	offset := (page - 1) * pageSize
+
+	// Get paginated results
 	query := `
 		SELECT title, url, citations, arxiv_abs_url, google_scholar_url, timestamp, arxiv_summary
 		FROM paper_cache
 		ORDER BY CASE WHEN citations IS NULL THEN 1 ELSE 0 END, citations DESC
+		LIMIT ? OFFSET ?
 	`
 
-	rows, err := s.db.Query(query)
+	rows, err := s.db.Query(query, pageSize, offset)
 	if err != nil {
 		log.Printf("Error querying papers: %v", err)
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -127,7 +183,7 @@ func (s *UIServer) getPapers() ([]PaperView, error) {
 
 		if err := rows.Scan(&paper.Title, &paper.URL, &citations, &arxivAbsURL, &googleScholarURL, &timestamp, &arxivSummary); err != nil {
 			log.Printf("Error scanning row: %v", err)
-			return nil, err
+			return nil, 0, err
 		}
 
 		if arxivAbsURL.Valid {
@@ -140,6 +196,7 @@ func (s *UIServer) getPapers() ([]PaperView, error) {
 
 		if arxivSummary.Valid {
 			paper.ArxivSummary = arxivSummary.String
+			paper.FirstSentence = getFirstSentence(arxivSummary.String)
 			log.Printf("Found abstract for paper: %s (length: %d)", paper.Title, len(paper.ArxivSummary))
 		} else {
 			log.Printf("No abstract found for paper: %s", paper.Title)
@@ -162,76 +219,11 @@ func (s *UIServer) getPapers() ([]PaperView, error) {
 
 	if err := rows.Err(); err != nil {
 		log.Printf("Error iterating rows: %v", err)
-		return nil, err
+		return nil, 0, err
 	}
 
-	log.Printf("Total papers loaded: %d", len(papers))
-	return papers, nil
+	log.Printf("Loaded %d papers (page %d, total %d)", len(papers), page, total)
+	return papers, total, nil
 }
-
-// indexTemplate is the HTML template for the index page
-const indexTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Paper Citations Database</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-</head>
-<body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">Paper Citations Database</h1>
-            <p class="text-gray-600">Showing {{.Count}} papers sorted by citation count</p>
-            <div class="mt-4">
-                <a href="/refresh" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded">
-                    Refresh Data
-                </a>
-            </div>
-        </header>
-
-        <div class="space-y-4">
-            {{range .Papers}}
-            <div class="bg-white shadow-md rounded-lg overflow-hidden">
-                <div class="p-6">
-                    <div class="flex justify-between items-start">
-                        <div class="flex-1">
-                            <h2 class="text-xl font-semibold text-gray-900 mb-2">{{.Title}}</h2>
-                            <div class="flex items-center space-x-4 text-sm text-gray-600">
-                                <span>Citations: {{if .Citations}}{{.Citations}}{{else}}N/A{{end}}</span>
-                                <span>Last Updated: {{.LastUpdate}}</span>
-                            </div>
-                        </div>
-                        <div class="flex space-x-4">
-                            <a href="{{.URL}}" target="_blank" class="text-gray-600 hover:text-gray-900">Paper</a>
-                            {{if .ArxivAbsURL}}
-                            <a href="{{.ArxivAbsURL}}" target="_blank" class="text-gray-600 hover:text-gray-900">arXiv</a>
-                            {{end}}
-                            {{if .GoogleScholarURL}}
-                            <a href="{{.GoogleScholarURL}}" target="_blank" class="text-gray-600 hover:text-gray-900">Scholar</a>
-                            {{end}}
-                        </div>
-                    </div>
-                </div>
-                {{if .ArxivSummary}}
-                <div class="border-t border-gray-200">
-                    <div class="p-6">
-                        <details>
-                            <summary class="text-sm font-medium text-gray-500 cursor-pointer hover:text-gray-700">
-                                Abstract (click to expand)
-                            </summary>
-                            <div class="mt-2 text-gray-700">
-                                {{.ArxivSummary}}
-                            </div>
-                        </details>
-                    </div>
-                </div>
-                {{end}}
-            </div>
-            {{end}}
-        </div>
-    </div>
-</body>
-</html>`
 
 // No longer needed as we're using the Tailwind CDN
