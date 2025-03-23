@@ -30,10 +30,42 @@ const indexTemplate = `<!DOCTYPE html>
         .expand-button:hover {
             background-color: #f3f4f6;
         }
+        .search-input {
+            width: 300px;
+        }
     </style>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Handle abstract expansion
+        // Debounce function
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Update URL with search parameters
+        function updateURL(searchQuery, page) {
+            const url = new URL(window.location);
+            if (searchQuery) {
+                url.searchParams.set('q', searchQuery);
+            } else {
+                url.searchParams.delete('q');
+            }
+            if (page && page > 1) {
+                url.searchParams.set('page', page);
+            } else {
+                url.searchParams.delete('page');
+            }
+            window.history.pushState({}, '', url);
+        }
+
+        // Setup abstract expansion functionality
+        function setupAbstractExpansion() {
             document.querySelectorAll('.abstract-container').forEach(container => {
                 const button = container.querySelector('.expand-button');
                 const firstSentence = container.querySelector('.text-gray-600');
@@ -53,6 +85,74 @@ const indexTemplate = `<!DOCTYPE html>
                     });
                 }
             });
+        }
+
+        // Perform search
+        function performSearch(query) {
+            const currentPage = new URLSearchParams(window.location.search).get('page') || '1';
+            const url = new URL('/api/papers', window.location.origin);
+            url.searchParams.set('q', query);
+            url.searchParams.set('page', '1'); // Reset to first page on new search
+
+            fetch(url.toString())
+                .then(response => response.json())
+                .then(data => {
+                    // Update the table body
+                    const tbody = document.querySelector('tbody');
+                    if (data.papers.length === 0) {
+                        tbody.innerHTML = '<tr>' +
+                            '<td colspan="3" class="px-4 py-3 text-center text-gray-500">' +
+                                'No papers found matching "' + query + '"' +
+                            '</td>' +
+                        '</tr>';
+                    } else {
+                        tbody.innerHTML = data.papers.map(paper =>
+                            '<tr>' +
+                                '<td class="px-4 py-3">' +
+                                    '<div class="text-lg font-medium text-gray-900">' + paper.Title + '</div>' +
+                                    (paper.ArxivSummary ?
+                                    '<div class="mt-2 abstract-container">' +
+                                        '<span class="text-sm text-gray-600">' + paper.FirstSentence + '</span>' +
+                                        '<button class="expand-button ml-2">...</button>' +
+                                        '<div class="abstract-text" style="display: none;">' + paper.ArxivSummary + '</div>' +
+                                    '</div>' : '') +
+                                '</td>' +
+                                '<td class="px-4 py-3">' +
+                                    '<div class="citation-count text-sm text-gray-900">' + (paper.Citations || 0) + '</div>' +
+                                '</td>' +
+                                '<td class="px-4 py-3">' +
+                                    '<div class="flex flex-col gap-1">' +
+                                        '<a href="' + paper.URL + '" target="_blank" class="text-sm text-gray-600 hover:text-gray-900">Paper</a>' +
+                                        (paper.ArxivAbsURL ? '<a href="' + paper.ArxivAbsURL + '" target="_blank" class="text-sm text-gray-600 hover:text-gray-900">arXiv</a>' : '') +
+                                        (paper.GoogleScholarURL ? '<a href="' + paper.GoogleScholarURL + '" target="_blank" class="text-sm text-gray-600 hover:text-gray-900">Scholar</a>' : '') +
+                                    '</div>' +
+                                '</td>' +
+                            '</tr>'
+                        ).join('');
+                    }
+
+                    // Update pagination
+                    const paginationContainer = document.getElementById('paginationContainer');
+                    const paginationHtml =
+                        (data.currentPage > 1 ?
+                            '<a href="?page=' + (data.currentPage - 1) + (query ? '&q=' + query : '') + '" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Previous</a>' : '') +
+                        '<span class="px-3 py-1 text-sm font-medium text-gray-700 whitespace-nowrap">Page ' + data.currentPage + ' of ' + data.totalPages + '</span>' +
+                        (data.currentPage < data.totalPages ?
+                            '<a href="?page=' + (data.currentPage + 1) + (query ? '&q=' + query : '') + '" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Next</a>' : '');
+                    paginationContainer.innerHTML = paginationHtml;
+
+                    // Update URL
+                    updateURL(query, 1);
+
+                    // Reattach event listeners for abstract expansion
+                    setupAbstractExpansion();
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Setup abstract expansion functionality
+            setupAbstractExpansion();
 
             // Add sorting functionality
             const table = document.querySelector('table');
@@ -78,6 +178,24 @@ const indexTemplate = `<!DOCTYPE html>
                     });
                 }
             });
+
+            // Setup search functionality
+            const searchInput = document.getElementById('searchInput');
+            const debouncedSearch = debounce((query) => {
+                performSearch(query);
+            }, 100);
+
+            searchInput.addEventListener('input', (e) => {
+                debouncedSearch(e.target.value);
+            });
+
+            // Handle browser back/forward buttons
+            window.addEventListener('popstate', () => {
+                const url = new URL(window.location);
+                const query = url.searchParams.get('q') || '';
+                searchInput.value = query;
+                performSearch(query);
+            });
         });
     </script>
 </head>
@@ -86,19 +204,28 @@ const indexTemplate = `<!DOCTYPE html>
         <div class="flex justify-between items-center mb-8">
             <h1 class="text-2xl font-semibold text-gray-900 px-4">Paper Citations</h1>
             <div class="flex items-center space-x-2" style="margin-right: 18px;">
-                {{if gt .CurrentPage 1}}
-                <a href="?page={{subtract .CurrentPage 1}}" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
-                    Previous
-                </a>
-                {{end}}
-                <span class="px-3 py-1 text-sm font-medium text-gray-700">
-                    Page {{.CurrentPage}} of {{.TotalPages}}
-                </span>
-                {{if lt .CurrentPage .TotalPages}}
-                <a href="?page={{add .CurrentPage 1}}" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
-                    Next
-                </a>
-                {{end}}
+                <div id="searchContainer">
+                    <input type="text"
+                           id="searchInput"
+                           class="search-input px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                           placeholder="Search papers..."
+                           value="{{.SearchQuery}}">
+                </div>
+                <div id="paginationContainer" class="flex items-center space-x-2">
+                    {{if gt .CurrentPage 1}}
+                    <a href="?page={{subtract .CurrentPage 1}}{{if .SearchQuery}}&q={{.SearchQuery}}{{end}}" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
+                        Previous
+                    </a>
+                    {{end}}
+                    <span class="px-3 py-1 text-sm font-medium text-gray-700 whitespace-nowrap">
+                        Page {{.CurrentPage}} of {{.TotalPages}}
+                    </span>
+                    {{if lt .CurrentPage .TotalPages}}
+                    <a href="?page={{add .CurrentPage 1}}{{if .SearchQuery}}&q={{.SearchQuery}}{{end}}" class="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
+                        Next
+                    </a>
+                    {{end}}
+                </div>
             </div>
         </div>
 

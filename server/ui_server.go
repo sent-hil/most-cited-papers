@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
@@ -75,6 +76,7 @@ func NewUIServer(dbFilePath string) (*UIServer, error) {
 // Start starts the UI server
 func (s *UIServer) Start(addr string) error {
 	http.HandleFunc("/", s.handleIndex)
+	http.HandleFunc("/api/papers", s.handlePapersAPI)
 	http.HandleFunc("/refresh", s.handleRefresh)
 	http.HandleFunc("/tailwind.css", s.serveTailwind)
 
@@ -97,8 +99,11 @@ func (s *UIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse search query
+	searchQuery := r.URL.Query().Get("q")
+
 	const pageSize = 25
-	papers, total, err := s.getPapers(page, pageSize)
+	papers, total, err := s.getPapers(page, pageSize, searchQuery)
 	if err != nil {
 		http.Error(w, "Failed to fetch papers: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -116,12 +121,14 @@ func (s *UIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		CurrentPage int
 		TotalPages  int
 		PageSize    int
+		SearchQuery string
 	}{
 		Papers:      papers,
 		Count:       total,
 		CurrentPage: page,
 		TotalPages:  totalPages,
 		PageSize:    pageSize,
+		SearchQuery: searchQuery,
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -144,12 +151,78 @@ func (s *UIServer) serveTailwind(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("/* Using Tailwind CDN instead */"))
 }
 
-// getPapers fetches all papers from the database with pagination
-func (s *UIServer) getPapers(page, pageSize int) ([]PaperView, int, error) {
+// handlePapersAPI handles AJAX requests for paper data
+func (s *UIServer) handlePapersAPI(w http.ResponseWriter, r *http.Request) {
+	// Parse page parameter from query string
+	page := 1
+	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+
+	// Parse search query
+	searchQuery := r.URL.Query().Get("q")
+
+	const pageSize = 25
+	papers, total, err := s.getPapers(page, pageSize, searchQuery)
+	if err != nil {
+		http.Error(w, "Failed to fetch papers: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Calculate pagination info
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	// If no results found, ensure papers is an empty array
+	if total == 0 {
+		papers = []PaperView{}
+	}
+
+	response := struct {
+		Papers      []PaperView `json:"papers"`
+		Count       int         `json:"count"`
+		CurrentPage int         `json:"currentPage"`
+		TotalPages  int         `json:"totalPages"`
+		PageSize    int         `json:"pageSize"`
+	}{
+		Papers:      papers,
+		Count:       total,
+		CurrentPage: page,
+		TotalPages:  totalPages,
+		PageSize:    pageSize,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "Failed to encode response: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// getPapers fetches all papers from the database with pagination and search
+func (s *UIServer) getPapers(page, pageSize int, searchQuery string) ([]PaperView, int, error) {
+	// Build the base query
+	baseQuery := `SELECT title, url, citations, arxiv_abs_url, google_scholar_url, timestamp, arxiv_summary FROM paper_cache`
+	countQuery := `SELECT COUNT(*) FROM paper_cache`
+
+	var args []interface{}
+	var whereClause string
+
+	if searchQuery != "" {
+		whereClause = ` WHERE title LIKE ? OR arxiv_summary LIKE ?`
+		searchPattern := "%" + searchQuery + "%"
+		args = append(args, searchPattern, searchPattern)
+	}
+
 	// Get total count
 	var total int
-	countQuery := `SELECT COUNT(*) FROM paper_cache`
-	if err := s.db.QueryRow(countQuery).Scan(&total); err != nil {
+	if whereClause != "" {
+		countQuery += whereClause
+	}
+	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		log.Printf("Error getting total count: %v", err)
 		return nil, 0, err
 	}
@@ -158,14 +231,10 @@ func (s *UIServer) getPapers(page, pageSize int) ([]PaperView, int, error) {
 	offset := (page - 1) * pageSize
 
 	// Get paginated results
-	query := `
-		SELECT title, url, citations, arxiv_abs_url, google_scholar_url, timestamp, arxiv_summary
-		FROM paper_cache
-		ORDER BY CASE WHEN citations IS NULL THEN 1 ELSE 0 END, citations DESC
-		LIMIT ? OFFSET ?
-	`
+	query := baseQuery + whereClause + ` ORDER BY CASE WHEN citations IS NULL THEN 1 ELSE 0 END, citations DESC LIMIT ? OFFSET ?`
+	args = append(args, pageSize, offset)
 
-	rows, err := s.db.Query(query, pageSize, offset)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		log.Printf("Error querying papers: %v", err)
 		return nil, 0, err
@@ -222,7 +291,7 @@ func (s *UIServer) getPapers(page, pageSize int) ([]PaperView, int, error) {
 		return nil, 0, err
 	}
 
-	log.Printf("Loaded %d papers (page %d, total %d)", len(papers), page, total)
+	log.Printf("Loaded %d papers (page %d, total %d, search: %q)", len(papers), page, total, searchQuery)
 	return papers, total, nil
 }
 
