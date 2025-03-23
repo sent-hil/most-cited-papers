@@ -1,7 +1,7 @@
 {
-  "name": "paper-citations-ui",
+  "name": "server",
   "version": "1.0.0",
-  "description": "UI for paper citations",
+  "description": "UI for most cited papers",
   "scripts": {
     "test": "jest"
   },

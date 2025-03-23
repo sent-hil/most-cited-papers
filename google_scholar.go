@@ -2,12 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -26,113 +25,91 @@ func debugf(format string, v ...interface{}) {
 	}
 }
 
-// GetGoogleScholarURL fetches the paper page and extracts the Google Scholar URL
-func GetGoogleScholarURL(paperURL string) (string, error) {
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", paperURL, nil)
-	if err != nil {
-		return "", err
+// GetGoogleScholarURL extracts the Google Scholar URL from a paper's page
+func GetGoogleScholarURL(url string) (string, error) {
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
+	// Make the request
+	resp, err := client.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to fetch page: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 429 {
-		log.Fatalf("Rate limited by %s. Please wait a few minutes before trying again.", paperURL)
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("failed to fetch paper page: %s", resp.Status)
+	// Check for rate limiting
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return "", fmt.Errorf("Rate limited by %s. Please wait a few minutes before trying again.", url)
 	}
 
-	// Parse the HTML response
+	// Check for other errors
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch page: status code %d", resp.StatusCode)
+	}
+
+	// Parse the HTML
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse HTML: %v", err)
 	}
 
-	// Different sites have different ways to link to Google Scholar
-	// Try different selector patterns
+	// Try to find the Google Scholar URL in different formats
+	var scholarURL string
 
-	// ACL Anthology pattern
-	scholarURL, exists := doc.Find("a[href*='scholar.google.com']").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// arXiv pattern
-	scholarURL, exists = doc.Find("a.gs").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// Some arXiv pages have a different pattern
-	scholarURL, exists = doc.Find("a[href*='scholar.google']").Attr("href")
-	if exists {
-		return scholarURL, nil
-	}
-
-	// If direct link isn't found, we can try to construct it for arXiv
-	if strings.Contains(paperURL, "arxiv.org") {
-		// Extract arXiv ID
-		idRegex := regexp.MustCompile(`arxiv\.org/abs/([0-9v.]+)`)
-		matches := idRegex.FindStringSubmatch(paperURL)
-		if len(matches) >= 2 {
-			arxivID := matches[1]
-			// Construct Scholar URL with arXiv ID
-			return fmt.Sprintf("https://scholar.google.com/scholar?q=arxiv:%s", arxivID), nil
+	// Try ACL Anthology format
+	doc.Find("div.card-body a").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists && strings.Contains(href, "scholar.google.com") {
+			scholarURL = href
 		}
+	})
+
+	// Try arXiv format
+	if scholarURL == "" {
+		doc.Find("div.gs_r div.gs_a a").Each(func(i int, s *goquery.Selection) {
+			if href, exists := s.Attr("href"); exists && strings.Contains(href, "scholar.google.com") {
+				scholarURL = href
+			}
+		})
 	}
 
-	// If we couldn't find a direct link, try to construct one from the title
-	title := doc.Find("title").Text()
-	if title != "" {
-		return fmt.Sprintf("https://scholar.google.com/scholar?q=%s", url.QueryEscape(title)), nil
+	if scholarURL == "" {
+		return "", fmt.Errorf("no Google Scholar URL found on page")
 	}
 
-	return "", nil
+	return scholarURL, nil
 }
 
 // FetchCitationsFromScholar gets the citation count from a Google Scholar page
 // Returns nil for citations if not found or error
 func FetchCitationsFromScholar(scholarURL string) (*int, error) {
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", scholarURL, nil)
-	if err != nil {
-		return nil, nil
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
+	// Make the request
+	resp, err := client.Get(scholarURL)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to fetch page: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 429 {
-		log.Fatalf("Rate limited by Google Scholar. Please wait a few minutes before trying again.")
-	}
-	if resp.StatusCode != 200 {
-		return nil, nil
+	// Check for rate limiting
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("Rate limited by Google Scholar. Please wait a few minutes before trying again.")
 	}
 
-	// Parse the HTML response
+	// Check for other errors
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch page: status code %d", resp.StatusCode)
+	}
+
+	// Parse the HTML
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to parse HTML: %v", err)
 	}
 
 	// Look for citation count on the page
@@ -165,45 +142,39 @@ func FetchCitationsFromScholar(scholarURL string) (*int, error) {
 
 // SearchGoogleScholar searches Google Scholar directly for a paper title
 // Returns the Google Scholar URL, citation count, and abstract (if available)
-func SearchGoogleScholar(title string, authors []string) (string, *int, string, error) {
+func SearchGoogleScholar(title string, authors []string, baseURL string) (string, *int, string, error) {
 	// Create Google Scholar search URL with title in quotes and authors
 	searchQuery := fmt.Sprintf("\"%s\"", title)
 	if len(authors) > 0 {
 		searchQuery = fmt.Sprintf("%s author:\"%s\"", searchQuery, authors[0])
 	}
-	searchURL := fmt.Sprintf("https://scholar.google.com/scholar?q=%s", url.QueryEscape(searchQuery))
-	debugf("GET %s", searchURL)
+	requestURL := fmt.Sprintf("%s?q=%s", baseURL, url.QueryEscape(searchQuery))
+	debugf("GET %s", requestURL)
 
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", searchURL, nil)
-	if err != nil {
-		return searchURL, nil, "", nil
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
+	// Make the request
+	resp, err := client.Get(requestURL)
 	if err != nil {
-		return searchURL, nil, "", nil
+		return requestURL, nil, "", fmt.Errorf("failed to fetch page: %v", err)
 	}
 	defer resp.Body.Close()
 
 	debugf("Response: %s", resp.Status)
-	if resp.StatusCode == 429 {
-		log.Fatalf("Rate limited by Google Scholar. Please wait a few minutes before trying again.")
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return requestURL, nil, "", fmt.Errorf("Rate limited by Google Scholar. Please wait a few minutes before trying again.")
 	}
-	if resp.StatusCode != 200 {
-		return searchURL, nil, "", nil
+	if resp.StatusCode != http.StatusOK {
+		return requestURL, nil, "", fmt.Errorf("failed to fetch page: status code %d", resp.StatusCode)
 	}
 
 	// Parse the HTML response
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return searchURL, nil, "", nil
+		return requestURL, nil, "", fmt.Errorf("failed to parse HTML: %v", err)
 	}
 
 	// Look for citation count and abstract in the search results
@@ -267,7 +238,7 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 
 	// If we found a good match, use its URL, otherwise use the search URL
 	if bestMatchURL != "" {
-		searchURL = bestMatchURL
+		requestURL = bestMatchURL
 	}
 
 	// If we found a match but no citation count, try to get it from the paper's page
@@ -275,5 +246,5 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 		citationPtr, _ = FetchCitationsFromScholar(bestMatchURL)
 	}
 
-	return searchURL, citationPtr, abstract, nil
+	return requestURL, citationPtr, abstract, nil
 }

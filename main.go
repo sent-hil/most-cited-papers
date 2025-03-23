@@ -12,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gomarkdown/markdown/ast"
+	"github.com/gomarkdown/markdown/parser"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Paper represents a scientific paper with its title and citation count
+// Paper represents a research paper with its metadata
 type Paper struct {
 	Title            string
 	URL              string
@@ -23,12 +25,15 @@ type Paper struct {
 	GoogleScholarURL string
 	ArxivSummary     string
 	Citations        *int
+	Processed        bool
 }
 
 // CacheDB handles interactions with the SQLite cache
 type CacheDB struct {
 	db *sql.DB
 }
+
+var cacheDB *sql.DB
 
 func main() {
 	// Parse command line flags
@@ -53,11 +58,11 @@ func main() {
 	}
 
 	// Initialize cache
-	cache, err := initCache("paper_cache.db")
+	err := initCache()
 	if err != nil {
 		log.Fatalf("Failed to initialize cache: %v", err)
 	}
-	defer cache.close()
+	defer closeCache()
 
 	papers := parseMarkdownPapers(*inputFile)
 	debugf("Found %d papers to process", len(papers))
@@ -70,7 +75,7 @@ func main() {
 		// Check if we have this paper in cache and force flag is not set
 		var cached *Paper
 		if !*force {
-			cached, err = cache.getCitation(papers[i].URL)
+			cached, err = getCachedPaper(papers[i].URL)
 			if err != nil {
 				log.Printf("Error checking cache for '%s': %v\n", papers[i].URL, err)
 			}
@@ -110,7 +115,7 @@ func main() {
 			}
 
 			// Cache the result
-			err = cache.saveCitation(papers[i])
+			err = saveCitation(papers[i].URL, *papers[i].Citations, papers[i].ArxivSummary)
 			if err != nil {
 				log.Printf("Error caching data for '%s': %v\n", papers[i].URL, err)
 			}
@@ -165,89 +170,76 @@ func main() {
 	debugf("Processing finished")
 }
 
-// initCache initializes the SQLite database for caching
-func initCache(dbPath string) (*CacheDB, error) {
+// initCache initializes the SQLite database for caching citations
+func initCache() error {
+	dbPath := "citations.db"
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Create table if it doesn't exist
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS paper_cache (
-		url TEXT PRIMARY KEY,
-		title TEXT NOT NULL,
-		citations INTEGER,
-		arxiv_abs_url TEXT,
-		google_scholar_url TEXT,
-		arxiv_summary TEXT,
-		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-	);`
-
-	_, err = db.Exec(createTableSQL)
+	// Create citations table if it doesn't exist
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS citations (
+			url TEXT PRIMARY KEY,
+			citations INTEGER,
+			abstract TEXT,
+			last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
 	if err != nil {
-		db.Close()
-		return nil, err
+		return fmt.Errorf("failed to create table: %v", err)
 	}
 
-	return &CacheDB{db: db}, nil
+	cacheDB = db
+	return nil
 }
 
-// close closes the database connection
-func (c *CacheDB) close() error {
-	return c.db.Close()
+// closeCache closes the database connection
+func closeCache() {
+	if cacheDB != nil {
+		cacheDB.Close()
+	}
 }
 
-// getCitation retrieves a paper from cache by URL
-func (c *CacheDB) getCitation(url string) (*Paper, error) {
-	query := `SELECT title, citations, arxiv_abs_url, google_scholar_url, arxiv_summary FROM paper_cache WHERE url = ?`
+// getCitation retrieves a citation count from the cache
+func getCitation(url string) (*int, error) {
+	if cacheDB == nil {
+		return nil, nil
+	}
 
-	var title string
 	var citations sql.NullInt64
-	var arxivAbsURL sql.NullString
-	var googleScholarURL sql.NullString
-	var arxivSummary sql.NullString
-
-	err := c.db.QueryRow(query, url).Scan(&title, &citations, &arxivAbsURL, &googleScholarURL, &arxivSummary)
-
+	err := cacheDB.QueryRow("SELECT citations FROM citations WHERE url = ?", url).Scan(&citations)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			// Not in cache
-			return nil, nil
-		}
-		return nil, err
+		return nil, fmt.Errorf("failed to query cache: %v", err)
 	}
 
-	paper := &Paper{
-		Title:            title,
-		URL:              url,
-		ArxivAbsURL:      arxivAbsURL.String,
-		GoogleScholarURL: googleScholarURL.String,
-		ArxivSummary:     arxivSummary.String,
+	if !citations.Valid {
+		return nil, nil
 	}
 
-	if citations.Valid {
-		citationCount := int(citations.Int64)
-		paper.Citations = &citationCount
-	}
-
-	return paper, nil
+	count := int(citations.Int64)
+	return &count, nil
 }
 
-// saveCitation saves a paper to the cache
-func (c *CacheDB) saveCitation(paper Paper) error {
-	// Insert or replace existing entry
-	query := `INSERT OR REPLACE INTO paper_cache (url, title, citations, arxiv_abs_url, google_scholar_url, arxiv_summary) VALUES (?, ?, ?, ?, ?, ?)`
-
-	var citationValue interface{}
-	if paper.Citations != nil {
-		citationValue = *paper.Citations
-	} else {
-		citationValue = nil
+// saveCitation saves a citation count and abstract to the cache
+func saveCitation(url string, citations int, abstract string) error {
+	if cacheDB == nil {
+		return nil
 	}
 
-	_, err := c.db.Exec(query, paper.URL, paper.Title, citationValue, paper.ArxivAbsURL, paper.GoogleScholarURL, paper.ArxivSummary)
-	return err
+	_, err := cacheDB.Exec(`
+		INSERT OR REPLACE INTO citations (url, citations, abstract, last_updated)
+		VALUES (?, ?, ?, datetime('now'))
+	`, url, citations, abstract)
+	if err != nil {
+		return fmt.Errorf("failed to save to cache: %v", err)
+	}
+
+	return nil
 }
 
 // parseMarkdownPapers extracts paper information from a markdown file
@@ -358,7 +350,7 @@ func processNonArxivPaper(paper *Paper) error {
 			}
 			if len(authors) > 0 {
 				// Use the authors for Google Scholar search
-				scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
+				scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors, "https://scholar.google.com")
 				paper.GoogleScholarURL = scholarURL
 				paper.Citations = citationPtr
 				// If we don't have an abstract from ACL but got one from Google Scholar, use that
@@ -393,7 +385,7 @@ func processNonArxivPaper(paper *Paper) error {
 	}
 
 	// Search Google Scholar by title and authors
-	scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
+	scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors, "https://scholar.google.com")
 
 	// Only set Google Scholar URL if it's actually a Google Scholar URL
 	if strings.Contains(scholarURL, "scholar.google.com") {
@@ -415,4 +407,107 @@ func processNonArxivPaper(paper *Paper) error {
 	}
 
 	return nil
+}
+
+// processMarkdownFile parses a markdown file and returns a list of papers
+func processMarkdownFile(filename string) ([]Paper, error) {
+	// Read the markdown file
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read markdown file: %v", err)
+	}
+
+	// Parse the markdown
+	extensions := parser.CommonExtensions | parser.NoIntraEmphasis
+	p := parser.NewWithExtensions(extensions)
+	node := p.Parse(content)
+
+	// Walk through the AST to find links
+	var papers []Paper
+	ast.WalkFunc(node, func(node ast.Node, entering bool) ast.WalkStatus {
+		if !entering {
+			return ast.GoToNext
+		}
+
+		link, ok := node.(*ast.Link)
+		if !ok {
+			return ast.GoToNext
+		}
+
+		// Get the link text (title) and URL
+		title := string(link.Title)
+		if title == "" {
+			// If no title attribute, use the link text
+			var textContent string
+			ast.WalkFunc(link, func(node ast.Node, entering bool) ast.WalkStatus {
+				if !entering {
+					return ast.GoToNext
+				}
+				if text, ok := node.(*ast.Text); ok {
+					textContent += string(text.Literal)
+				}
+				return ast.GoToNext
+			})
+			title = textContent
+		}
+
+		url := string(link.Destination)
+
+		// Create a paper if we have both title and URL
+		if title != "" && url != "" {
+			papers = append(papers, Paper{
+				Title: title,
+				URL:   url,
+			})
+		}
+
+		return ast.GoToNext
+	})
+
+	return papers, nil
+}
+
+// getCachedPaper retrieves a paper from the cache
+func getCachedPaper(url string) (*Paper, error) {
+	if cacheDB == nil {
+		return nil, nil
+	}
+
+	var title string
+	var citations sql.NullInt64
+	var abstract sql.NullString
+
+	err := cacheDB.QueryRow("SELECT title, citations, abstract FROM citations WHERE url = ?", url).Scan(&title, &citations, &abstract)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cache: %v", err)
+	}
+
+	paper := &Paper{
+		Title:        title,
+		URL:          url,
+		ArxivSummary: abstract.String,
+	}
+
+	if citations.Valid {
+		count := int(citations.Int64)
+		paper.Citations = &count
+	}
+
+	return paper, nil
+}
+
+// sortPapersByCitations sorts papers by citation count in descending order
+func sortPapersByCitations(papers []Paper) {
+	sort.Slice(papers, func(i, j int) bool {
+		if papers[i].Citations == nil {
+			return false
+		}
+		if papers[j].Citations == nil {
+			return true
+		}
+		return *papers[i].Citations > *papers[j].Citations
+	})
 }

@@ -14,7 +14,7 @@ const {
 document.body.innerHTML = `
     <div class="flex justify-between items-center mb-8">
         <h1 class="text-2xl font-semibold text-gray-900 px-4">
-            <a href="/" class="hover:text-gray-600 transition-colors">Paper Citations</a>
+            <a href="/" class="hover:text-gray-600 transition-colors">Most Cited Papers</a>
         </h1>
         <div class="flex items-center space-x-2">
             <div id="searchContainer">
@@ -231,7 +231,7 @@ describe('Header Link', () => {
         document.body.innerHTML = `
             <div class="flex justify-between items-center mb-8">
                 <h1 class="text-2xl font-semibold text-gray-900 px-4">
-                    <a href="/" class="hover:text-gray-600 transition-colors">Paper Citations</a>
+                    <a href="/" class="hover:text-gray-600 transition-colors">Most Cited Papers</a>
                 </h1>
                 <div class="flex items-center space-x-2">
                     <div id="searchContainer">
