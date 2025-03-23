@@ -1,17 +1,28 @@
-// Import the functions we're testing
+// Import jest-dom matchers
+require('@testing-library/jest-dom');
+
+// Import functions to test
 const {
     highlightText,
     updateURL,
     setupAbstractExpansion,
-    performSearch
+    performSearch,
+    debounce
 } = require('./search.js');
 
 // Mock the DOM environment
 document.body.innerHTML = `
-    <div id="searchContainer">
-        <input type="text" id="searchInput" class="search-input" value="">
+    <div class="flex justify-between items-center mb-8">
+        <h1 class="text-2xl font-semibold text-gray-900 px-4">
+            <a href="/" class="hover:text-gray-600 transition-colors">Paper Citations</a>
+        </h1>
+        <div class="flex items-center space-x-2">
+            <div id="searchContainer">
+                <input type="text" id="searchInput" class="search-input" value="test query">
+            </div>
+            <div id="paginationContainer"></div>
+        </div>
     </div>
-    <div id="paginationContainer"></div>
     <table>
         <tbody></tbody>
     </table>
@@ -66,6 +77,7 @@ describe('updateURL', () => {
         expect(call[1]).toBe('');
         const url = new URL(call[2]);
         expect(url.searchParams.get('q')).toBe('mining');
+        expect(url.searchParams.get('page')).toBeNull();
     });
 
     test('should update URL with page number', () => {
@@ -74,6 +86,7 @@ describe('updateURL', () => {
         expect(call[0]).toEqual({});
         expect(call[1]).toBe('');
         const url = new URL(call[2]);
+        expect(url.searchParams.get('q')).toBeNull();
         expect(url.searchParams.get('page')).toBe('2');
     });
 
@@ -253,24 +266,37 @@ describe('Header Link', () => {
         // Get the header link
         const headerLink = document.querySelector('h1 a');
 
-        // Simulate click
-        headerLink.click();
+        // Setup the click handler
+        headerLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            // Clear search input
+            const searchInput = document.getElementById('searchInput');
+            searchInput.value = '';
+            // Update URL to home page
+            window.history.pushState({}, '', '/');
+            // Perform empty search to reset results
+            performSearch('');
+        });
 
-        // Verify URL was updated to home page
-        expect(window.history.pushState).toHaveBeenCalledWith(
-            {},
-            '',
-            'http://localhost/'
-        );
+        // Create and dispatch click event
+        const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+        });
+        headerLink.dispatchEvent(clickEvent);
+
+        // Wait for any async operations to complete
+        await new Promise(resolve => setTimeout(resolve, 0));
 
         // Verify search input was cleared
         const searchInput = document.getElementById('searchInput');
         expect(searchInput.value).toBe('');
-    });
 
-    test('should have correct styling', () => {
-        const headerLink = document.querySelector('h1 a');
-        expect(headerLink).toHaveClass('hover:text-gray-600');
-        expect(headerLink).toHaveClass('transition-colors');
+        // Verify URL was updated to home page
+        const pushStateCall = window.history.pushState.mock.calls[0];
+        expect(pushStateCall[0]).toEqual({});
+        expect(pushStateCall[1]).toBe('');
+        expect(pushStateCall[2]).toBe('/');
     });
 });

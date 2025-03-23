@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "description": "UI for paper citations",
   "scripts": {
-    "test": "jest",
-    "test:watch": "jest --watch"
+    "test": "jest"
   },
   "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@testing-library/jest-dom": "^6.4.2",
+    "babel-jest": "^29.7.0",
+    "identity-obj-proxy": "^3.0.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0"
-  },
-  "jest": {
-    "testEnvironment": "jsdom",
-    "setupFiles": ["./jest.setup.js"]
   }
 }
