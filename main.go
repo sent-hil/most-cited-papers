@@ -22,7 +22,7 @@ type Paper struct {
 	ArxivAbsURL      string
 	GoogleScholarURL string
 	ArxivSummary     string
-	Citations        int
+	Citations        *int
 }
 
 // CacheDB handles interactions with the SQLite cache
@@ -120,16 +120,16 @@ func main() {
 	// Sort papers by citation count (descending)
 	sort.Slice(papers, func(i, j int) bool {
 		// Handle nil citations (place them at the end)
-		if papers[i].Citations == 0 && papers[j].Citations == 0 {
+		if papers[i].Citations == nil && papers[j].Citations == nil {
 			return false // Keep original order
 		}
-		if papers[i].Citations == 0 {
+		if papers[i].Citations == nil {
 			return false // i goes after j
 		}
-		if papers[j].Citations == 0 {
+		if papers[j].Citations == nil {
 			return true // i goes before j
 		}
-		return papers[i].Citations > papers[j].Citations
+		return *papers[i].Citations > *papers[j].Citations
 	})
 
 	// Print results
@@ -139,8 +139,8 @@ func main() {
 		fmt.Printf("%d. Title: %s\n   URL: %s\n   Citations: ",
 			i+1, paper.Title, paper.URL)
 
-		if paper.Citations != 0 {
-			fmt.Printf("%d\n", paper.Citations)
+		if paper.Citations != nil {
+			fmt.Printf("%d\n", *paper.Citations)
 		} else {
 			fmt.Printf("N/A\n")
 		}
@@ -156,10 +156,7 @@ func main() {
 		if paper.ArxivSummary != "" {
 			// Get first sentence of abstract
 			firstSentence := strings.Split(paper.ArxivSummary, ".")[0] + "."
-			fmt.Printf("   Abstract: %s [Click to expand]\n", firstSentence)
-			fmt.Printf("   <details><summary>Full abstract</summary>\n")
-			fmt.Printf("   %s\n", paper.ArxivSummary)
-			fmt.Printf("   </details>\n")
+			fmt.Printf("   Abstract: %s\n", firstSentence)
 		}
 
 		fmt.Println()
@@ -167,7 +164,6 @@ func main() {
 
 	debugf("Processing finished")
 }
-
 
 // initCache initializes the SQLite database for caching
 func initCache(dbPath string) (*CacheDB, error) {
@@ -231,7 +227,8 @@ func (c *CacheDB) getCitation(url string) (*Paper, error) {
 	}
 
 	if citations.Valid {
-		paper.Citations = int(citations.Int64)
+		citationCount := int(citations.Int64)
+		paper.Citations = &citationCount
 	}
 
 	return paper, nil
@@ -243,8 +240,8 @@ func (c *CacheDB) saveCitation(paper Paper) error {
 	query := `INSERT OR REPLACE INTO paper_cache (url, title, citations, arxiv_abs_url, google_scholar_url, arxiv_summary) VALUES (?, ?, ?, ?, ?, ?)`
 
 	var citationValue interface{}
-	if paper.Citations != 0 {
-		citationValue = paper.Citations
+	if paper.Citations != nil {
+		citationValue = *paper.Citations
 	} else {
 		citationValue = nil
 	}
@@ -331,7 +328,7 @@ func processArxivPaper(paper *Paper) error {
 		return nil
 	}
 
-	paper.Citations = *citationPtr
+	paper.Citations = citationPtr
 	return nil
 }
 
@@ -363,9 +360,7 @@ func processNonArxivPaper(paper *Paper) error {
 				// Use the authors for Google Scholar search
 				scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
 				paper.GoogleScholarURL = scholarURL
-				if citationPtr != nil {
-					paper.Citations = *citationPtr
-				}
+				paper.Citations = citationPtr
 				// If we don't have an abstract from ACL but got one from Google Scholar, use that
 				if paper.ArxivSummary == "" && scholarAbstract != "" {
 					paper.ArxivSummary = scholarAbstract
@@ -400,17 +395,23 @@ func processNonArxivPaper(paper *Paper) error {
 	// Search Google Scholar by title and authors
 	scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
 
-	// Store the Google Scholar URL
-	paper.GoogleScholarURL = scholarURL
-
-	// Store citation count if available
-	if citationPtr != nil {
-		paper.Citations = *citationPtr
+	// Only set Google Scholar URL if it's actually a Google Scholar URL
+	if strings.Contains(scholarURL, "scholar.google.com") {
+		paper.GoogleScholarURL = scholarURL
 	}
+
+	// Store citation count
+	paper.Citations = citationPtr
 
 	// If we don't have an abstract from other sources but got one from Google Scholar, use that
 	if paper.ArxivSummary == "" && scholarAbstract != "" {
 		paper.ArxivSummary = scholarAbstract
+	}
+
+	// If we still don't have citations, try to get them from the paper's page
+	if paper.Citations == nil && paper.GoogleScholarURL != "" {
+		citationPtr, _ = FetchCitationsFromScholar(paper.GoogleScholarURL)
+		paper.Citations = citationPtr
 	}
 
 	return nil

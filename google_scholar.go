@@ -92,6 +92,12 @@ func GetGoogleScholarURL(paperURL string) (string, error) {
 		}
 	}
 
+	// If we couldn't find a direct link, try to construct one from the title
+	title := doc.Find("title").Text()
+	if title != "" {
+		return fmt.Sprintf("https://scholar.google.com/scholar?q=%s", url.QueryEscape(title)), nil
+	}
+
 	return "", nil
 }
 
@@ -143,6 +149,16 @@ func FetchCitationsFromScholar(scholarURL string) (*int, error) {
 			}
 		}
 	})
+
+	// If we found a "Cite" button but no citations, return 0
+	if citationPtr == nil {
+		doc.Find(".gs_or_cit").Each(func(_ int, s *goquery.Selection) {
+			if s.Find("span").Text() == "Cite" {
+				zero := 0
+				citationPtr = &zero
+			}
+		})
+	}
 
 	return citationPtr, nil
 }
@@ -222,6 +238,16 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 					}
 				}
 			})
+
+			// If no citations found, check for "Cite" button
+			if citationPtr == nil {
+				s.Find(".gs_or_cit").Each(func(_ int, link *goquery.Selection) {
+					if link.Find("span").Text() == "Cite" {
+						zero := 0
+						citationPtr = &zero
+					}
+				})
+			}
 
 			// Look for abstract in the snippet
 			s.Find(".gs_fma_snp").Each(func(_ int, abs *goquery.Selection) {
