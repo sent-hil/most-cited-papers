@@ -8,7 +8,7 @@ import (
 func main() {
 	// Define command line flags
 	dbPath := flag.String("db", "paper_cache.db", "Path to the SQLite database file")
-	addr := flag.String("addr", ":8080", "HTTP server address")
+	addr := flag.String("addr", ":9001", "HTTP server address")
 	flag.Parse()
 
 	// Create a new UI server

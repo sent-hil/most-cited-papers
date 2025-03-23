@@ -45,9 +45,26 @@ go run ui_server.go server_main.go [-db=path/to/database.db] -addr=9001
 
 Options:
 - `-db`: Database file path (default: `paper_cache.db`)
-- `-addr`: Server address (default: `:8080`)
+- `-addr`: Server address (default: `:9001`)
 
 2. Open your browser at `http://localhost:9001`
+
+#### Development
+Restart server when any of Go file changes (needs [entr](https://formulae.brew.sh/formula/entr))
+```
+ls *.go | grep -v "_test\.go" | entr -csr 'go run main.go template.go ui_server.go -db=../paper_cache.db -addr=:9001'
+```
+
+Run Go tests:
+```
+go test -v
+```
+
+Run node tests:
+
+```
+npm test
+```
 
 ## Notes
 
