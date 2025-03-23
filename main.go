@@ -158,17 +158,17 @@ func main() {
 
 // runWebServer starts the web UI server
 func runWebServer(dbPath, addr string) {
-	server, err := server.NewUIServer(dbPath)
+	srv, err := server.NewUIServer(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
-	defer server.Close()
+	defer srv.Close()
 
 	log.Printf("Starting UI server at %s", addr)
 	log.Printf("Database: %s", dbPath)
 	log.Printf("Open your browser at http://localhost%s", addr)
 
-	if err := server.Start(addr); err != nil {
+	if err := srv.Start(addr); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
