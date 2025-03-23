@@ -44,7 +44,9 @@ const indexTemplate = `<!DOCTYPE html>
 <body class="bg-white">
     <div class="max-w-6xl mx-auto px-4 py-6">
         <div class="flex justify-between items-center mb-8">
-            <h1 class="text-2xl font-semibold text-gray-900 px-4">Paper Citations</h1>
+            <h1 class="text-2xl font-semibold text-gray-900 px-4">
+                <a href="/" class="hover:text-gray-600 transition-colors">Paper Citations</a>
+            </h1>
             <div class="flex items-center space-x-2" style="margin-right: 18px;">
                 <div id="searchContainer">
                     <input type="text"

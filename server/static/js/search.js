@@ -155,6 +155,7 @@ function performSearch(query) {
         });
 }
 
+// Initialize search functionality
 document.addEventListener('DOMContentLoaded', function() {
     // Setup abstract expansion functionality
     setupAbstractExpansion();
@@ -176,6 +177,21 @@ document.addEventListener('DOMContentLoaded', function() {
         // Highlight text in all full abstracts
         document.querySelectorAll('.abstract-text').forEach(abstract => {
             abstract.innerHTML = highlightText(abstract.textContent, query);
+        });
+    }
+
+    // Setup header link
+    const headerLink = document.querySelector('h1 a');
+    if (headerLink) {
+        headerLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            // Clear search input
+            const searchInput = document.getElementById('searchInput');
+            searchInput.value = '';
+            // Update URL to home page
+            window.history.pushState({}, '', '/');
+            // Perform empty search to reset results
+            performSearch('');
         });
     }
 
@@ -204,11 +220,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Setup search functionality
+    // Setup search input
     const searchInput = document.getElementById('searchInput');
     const debouncedSearch = debounce((query) => {
         performSearch(query);
-    }, 100);
+    }, 300);
 
     searchInput.addEventListener('input', (e) => {
         debouncedSearch(e.target.value);

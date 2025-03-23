@@ -210,3 +210,67 @@ describe('performSearch', () => {
         expect(tbody.innerHTML).toContain('Error loading papers');
     });
 });
+
+// Test header link functionality
+describe('Header Link', () => {
+    beforeEach(() => {
+        // Reset DOM
+        document.body.innerHTML = `
+            <div class="flex justify-between items-center mb-8">
+                <h1 class="text-2xl font-semibold text-gray-900 px-4">
+                    <a href="/" class="hover:text-gray-600 transition-colors">Paper Citations</a>
+                </h1>
+                <div class="flex items-center space-x-2">
+                    <div id="searchContainer">
+                        <input type="text" id="searchInput" class="search-input" value="test query">
+                    </div>
+                    <div id="paginationContainer"></div>
+                </div>
+            </div>
+            <table>
+                <tbody></tbody>
+            </table>
+        `;
+        // Mock fetch
+        global.fetch = jest.fn().mockImplementation(() =>
+            Promise.resolve({
+                json: () => Promise.resolve({
+                    papers: [],
+                    count: 0,
+                    currentPage: 1,
+                    totalPages: 1
+                })
+            })
+        );
+    });
+
+    test('should clear search and reset to home page when clicking header', async () => {
+        // Mock window.location
+        delete window.location;
+        window.location = new URL('http://localhost/?q=test&page=2');
+        window.history.pushState = jest.fn();
+
+        // Get the header link
+        const headerLink = document.querySelector('h1 a');
+
+        // Simulate click
+        headerLink.click();
+
+        // Verify URL was updated to home page
+        expect(window.history.pushState).toHaveBeenCalledWith(
+            {},
+            '',
+            'http://localhost/'
+        );
+
+        // Verify search input was cleared
+        const searchInput = document.getElementById('searchInput');
+        expect(searchInput.value).toBe('');
+    });
+
+    test('should have correct styling', () => {
+        const headerLink = document.querySelector('h1 a');
+        expect(headerLink).toHaveClass('hover:text-gray-600');
+        expect(headerLink).toHaveClass('transition-colors');
+    });
+});
