@@ -153,18 +153,15 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 	// Create Google Scholar search URL with title in quotes and authors
 	searchQuery := fmt.Sprintf("\"%s\"", title)
 	if len(authors) > 0 {
-		// Add first author to the search query
 		searchQuery = fmt.Sprintf("%s author:\"%s\"", searchQuery, authors[0])
 	}
 	searchURL := fmt.Sprintf("https://scholar.google.com/scholar?q=%s", url.QueryEscape(searchQuery))
-	debugf("Debug: Searching with query: %s", searchQuery)
-	debugf("Debug: Full URL: %s", searchURL)
+	debugf("GET %s", searchURL)
 
 	// Create HTTP client
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
-		debugf("Debug: Error creating request: %v", err)
 		return searchURL, nil, "", nil
 	}
 
@@ -175,24 +172,21 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		debugf("Debug: Error making request: %v", err)
 		return searchURL, nil, "", nil
 	}
 	defer resp.Body.Close()
 
-	debugf("Debug: Response status: %s", resp.Status)
+	debugf("Response: %s", resp.Status)
 	if resp.StatusCode == 429 {
 		log.Fatalf("Rate limited by Google Scholar. Please wait a few minutes before trying again.")
 	}
 	if resp.StatusCode != 200 {
-		debugf("Debug: Bad response status: %d", resp.StatusCode)
 		return searchURL, nil, "", nil
 	}
 
 	// Parse the HTML response
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		debugf("Debug: Error parsing HTML: %v", err)
 		return searchURL, nil, "", nil
 	}
 
@@ -204,7 +198,6 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 
 	// Find all search results
 	results := doc.Find(".gs_ri")
-	debugf("Debug: Found %d search results", results.Length())
 
 	results.Each(func(_ int, s *goquery.Selection) {
 		if foundMatch {
@@ -213,29 +206,19 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 
 		// Get the paper title from the result
 		resultTitle := strings.TrimSpace(s.Find(".gs_rt").Text())
-		debugf("Debug: Found result title: %s", resultTitle)
-
-		// Clean up titles for comparison
 		cleanResultTitle := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(resultTitle, "\"", "")))
 		cleanSearchTitle := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(title, "\"", "")))
-		debugf("Debug: Clean titles - Result: %s, Search: %s", cleanResultTitle, cleanSearchTitle)
 
 		// Check if titles match (allowing for some flexibility)
 		if strings.Contains(cleanResultTitle, cleanSearchTitle) || strings.Contains(cleanSearchTitle, cleanResultTitle) {
-			debugf("Debug: Found title match!")
-
 			// Look for "Cited by X" link
 			s.Find(".gs_fl a").Each(func(_ int, link *goquery.Selection) {
 				text := link.Text()
-				debugf("Debug: Found link text: %s", text)
 				if strings.HasPrefix(text, "Cited by") {
 					citationText := strings.TrimPrefix(text, "Cited by ")
 					count, err := strconv.Atoi(citationText)
 					if err == nil {
 						citationPtr = &count
-						debugf("Debug: Found citation count: %d", count)
-					} else {
-						debugf("Debug: Error parsing citation count: %v", err)
 					}
 				}
 			})
@@ -249,7 +232,6 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 			s.Find(".gs_rt a").Each(func(_ int, link *goquery.Selection) {
 				if href, exists := link.Attr("href"); exists {
 					bestMatchURL = href
-					debugf("Debug: Found paper URL: %s", bestMatchURL)
 				}
 			})
 
@@ -264,25 +246,21 @@ func SearchGoogleScholar(title string, authors []string) (string, *int, string, 
 
 	// If we found a match but no citation count, try to get it from the paper's page
 	if foundMatch && citationPtr == nil && bestMatchURL != "" {
-		debugf("Debug: No citation count found in search results, trying paper page")
 		citationPtr, _ = FetchCitationsFromScholar(bestMatchURL)
-		if citationPtr != nil {
-			debugf("Debug: Found citation count on paper page: %d", *citationPtr)
-		} else {
-			debugf("Debug: No citation count found on paper page either")
-		}
 	}
 
 	return searchURL, citationPtr, abstract, nil
 }
 
-// GetACLAbstract fetches the abstract from an ACL Anthology page
-func GetACLAbstract(aclURL string) (string, error) {
+// GetACLInfo fetches both the abstract and authors from an ACL Anthology page in a single request
+func GetACLInfo(aclURL string) (string, []string, error) {
+	debugf("GET %s", aclURL)
+
 	// Create HTTP client
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", aclURL, nil)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// Set headers to mimic a browser
@@ -292,72 +270,32 @@ func GetACLAbstract(aclURL string) (string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 
+	debugf("Response: %s", resp.Status)
 	if resp.StatusCode == 429 {
 		log.Fatalf("Rate limited by ACL Anthology. Please wait a few minutes before trying again.")
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("failed to fetch ACL page: %s", resp.Status)
+		return "", nil, fmt.Errorf("failed to fetch ACL page: %s", resp.Status)
 	}
 
 	// Parse the HTML response
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	// Find the abstract using the ACL Anthology selector
+	// Get abstract
+	var abstract string
 	abstractBlock := doc.Find("div.card-body.acl-abstract span")
 	if abstractBlock.Length() > 0 {
-		summary := strings.TrimSpace(abstractBlock.Text())
-		return summary, nil
+		abstract = strings.TrimSpace(abstractBlock.Text())
 	}
 
-	return "", fmt.Errorf("abstract not found on ACL page")
-}
-
-// IsACLURL checks if a URL is from ACL Anthology
-func IsACLURL(url string) bool {
-	return strings.Contains(url, "aclanthology.org")
-}
-
-// GetACLAuthors fetches the authors from an ACL Anthology page
-func GetACLAuthors(aclURL string) ([]string, error) {
-	// Create HTTP client
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", aclURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set headers to mimic a browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 429 {
-		log.Fatalf("Rate limited by ACL Anthology. Please wait a few minutes before trying again.")
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to fetch ACL page: %s", resp.Status)
-	}
-
-	// Parse the HTML response
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find the authors using the ACL Anthology selector
+	// Get authors
 	var authors []string
 	doc.Find("p.lead a").Each(func(_ int, s *goquery.Selection) {
 		author := strings.TrimSpace(s.Text())
@@ -367,8 +305,25 @@ func GetACLAuthors(aclURL string) ([]string, error) {
 	})
 
 	if len(authors) == 0 {
-		return nil, fmt.Errorf("no authors found on ACL page")
+		return abstract, nil, fmt.Errorf("no authors found on ACL page")
 	}
 
-	return authors, nil
+	return abstract, authors, nil
+}
+
+// GetACLAbstract fetches the abstract from an ACL Anthology page
+func GetACLAbstract(aclURL string) (string, error) {
+	abstract, _, err := GetACLInfo(aclURL)
+	return abstract, err
+}
+
+// GetACLAuthors fetches the authors from an ACL Anthology page
+func GetACLAuthors(aclURL string) ([]string, error) {
+	_, authors, err := GetACLInfo(aclURL)
+	return authors, err
+}
+
+// IsACLURL checks if a URL is from ACL Anthology
+func IsACLURL(url string) bool {
+	return strings.Contains(url, "aclanthology.org")
 }

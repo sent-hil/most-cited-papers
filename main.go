@@ -33,7 +33,6 @@ type CacheDB struct {
 func main() {
 	// Parse command line flags
 	inputFile := flag.String("input", "", "Input markdown file containing paper titles")
-	outputFile := flag.String("output", "", "Output markdown file (default: input with -with-citations suffix)")
 	force := flag.Bool("force", false, "Force a fresh search, bypassing cache")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
@@ -43,9 +42,14 @@ func main() {
 
 	// Print usage if no input file specified
 	if *inputFile == "" {
-		fmt.Println("Usage: go run *.go -input <input.md> [-output <output.md>] [-force] [-debug]")
+		fmt.Println("Usage: go run *.go -input <input.md> [-force] [-debug]")
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+
+	debugf("Reading papers from: %s", *inputFile)
+	if *force {
+		debugf("Force flag set - will bypass cache")
 	}
 
 	// Initialize cache
@@ -56,10 +60,12 @@ func main() {
 	defer cache.close()
 
 	papers := parseMarkdownPapers(*inputFile)
+	debugf("Found %d papers to process", len(papers))
 
 	// Process each paper to get citation count
 	for i := range papers {
-		fmt.Printf("Processing: %s\n", papers[i].Title)
+		fmt.Printf("\n[Paper %d/%d] %s\n", i+1, len(papers), papers[i].Title)
+		debugf("Processing: %s", papers[i].URL)
 
 		// Check if we have this paper in cache and force flag is not set
 		var cached *Paper
@@ -72,37 +78,31 @@ func main() {
 
 		if cached != nil && !*force {
 			// Use cached data
-			if *debug {
-				fmt.Printf("  Using cached data for %s\n", papers[i].URL)
-			}
 			papers[i].Citations = cached.Citations
 			papers[i].ArxivAbsURL = cached.ArxivAbsURL
 			papers[i].GoogleScholarURL = cached.GoogleScholarURL
 			papers[i].ArxivSummary = cached.ArxivSummary
 		} else {
 			if *force {
-				fmt.Printf("  Force flag set, performing fresh search for %s\n", papers[i].URL)
+				debugf("Force flag set, performing fresh search")
 			}
 			// Add a delay to avoid being rate-limited
 			time.Sleep(2 * time.Second)
 
 			// Fetch new data
 			if IsArxivURL(papers[i].URL) && !IsArxivPDF(papers[i].URL) {
-				// For arXiv abstract pages, try to follow links
+				debugf("Processing arXiv paper")
 				err := processArxivPaper(&papers[i])
 				if err != nil {
 					log.Printf("Error processing arXiv paper '%s': %v\n", papers[i].Title, err)
-					// Fall back to direct search if following links fails
+					debugf("Falling back to direct search")
 					err = processNonArxivPaper(&papers[i])
 					if err != nil {
 						log.Printf("Fallback search also failed for '%s': %v\n", papers[i].Title, err)
 					}
 				}
 			} else {
-				// For non-arXiv papers or arXiv PDF links, directly search by title
-				if *debug {
-					log.Printf("Using title search for '%s'\n", papers[i].Title)
-				}
+				debugf("Using title search for paper")
 				err := processNonArxivPaper(&papers[i])
 				if err != nil {
 					log.Printf("Error searching Google Scholar for '%s': %v\n", papers[i].Title, err)
@@ -133,7 +133,7 @@ func main() {
 	})
 
 	// Print results
-	fmt.Println("\nResults sorted by citation count:")
+	fmt.Println("\n[Results] Papers sorted by citation count:")
 	fmt.Println("----------------------------------")
 	for i, paper := range papers {
 		fmt.Printf("%d. Title: %s\n   URL: %s\n   Citations: ",
@@ -153,8 +153,19 @@ func main() {
 			fmt.Printf("   Scholar: %s\n", paper.GoogleScholarURL)
 		}
 
+		if paper.ArxivSummary != "" {
+			// Get first sentence of abstract
+			firstSentence := strings.Split(paper.ArxivSummary, ".")[0] + "."
+			fmt.Printf("   Abstract: %s [Click to expand]\n", firstSentence)
+			fmt.Printf("   <details><summary>Full abstract</summary>\n")
+			fmt.Printf("   %s\n", paper.ArxivSummary)
+			fmt.Printf("   </details>\n")
+		}
+
 		fmt.Println()
 	}
+
+	debugf("Processing finished")
 }
 
 
@@ -342,41 +353,45 @@ func processNonArxivPaper(paper *Paper) error {
 			}
 		}
 	} else if IsACLURL(paper.URL) {
-		// Try to get abstract from ACL Anthology
-		summary, err := GetACLAbstract(paper.URL)
-		if err == nil && summary != "" {
-			paper.ArxivSummary = summary
+		// Try to get both abstract and authors from ACL Anthology in one request
+		summary, authors, err := GetACLInfo(paper.URL)
+		if err == nil {
+			if summary != "" {
+				paper.ArxivSummary = summary
+			}
+			if len(authors) > 0 {
+				// Use the authors for Google Scholar search
+				scholarURL, citationPtr, scholarAbstract, _ := SearchGoogleScholar(paper.Title, authors)
+				paper.GoogleScholarURL = scholarURL
+				if citationPtr != nil {
+					paper.Citations = *citationPtr
+				}
+				// If we don't have an abstract from ACL but got one from Google Scholar, use that
+				if paper.ArxivSummary == "" && scholarAbstract != "" {
+					paper.ArxivSummary = scholarAbstract
+				}
+				return nil
+			}
 		}
 	}
 
-	// Get authors from the appropriate source
+	// If we couldn't get authors from ACL or this isn't an ACL paper, try to extract from title
 	authors := []string{}
-	if IsACLURL(paper.URL) {
-		// Try to get authors from ACL page
-		aclAuthors, err := GetACLAuthors(paper.URL)
-		if err == nil && len(aclAuthors) > 0 {
-			authors = aclAuthors
-		}
-	}
-
-	// If we couldn't get authors from ACL, try to extract from title
-	if len(authors) == 0 {
-		titleParts := strings.Split(paper.Title, " - ")
-		if len(titleParts) > 1 {
-			authorPart := titleParts[0]
-			// Handle "et al." case
-			if strings.Contains(authorPart, "et al.") {
-				authors = append(authors, strings.TrimSpace(strings.ReplaceAll(authorPart, "et al.", "")))
-			} else {
-				// Handle multiple authors case
-				authorList := strings.Split(authorPart, ",")
-				for _, author := range authorList {
-					author = strings.TrimSpace(author)
-					// Remove "and" from the last author
-					author = strings.TrimPrefix(author, "and ")
-					if author != "" {
-						authors = append(authors, author)
-					}
+	titleParts := strings.Split(paper.Title, " - ")
+	if len(titleParts) > 1 {
+		authorPart := titleParts[0]
+		// Handle "et al." case
+		if strings.Contains(authorPart, "et al.") {
+			authors = append(authors, strings.TrimSpace(strings.ReplaceAll(authorPart, "et al.", "")))
+		} else {
+			// Handle multiple authors case
+			authorList := strings.Split(authorPart, ",")
+			for _, author := range authorList {
+				author = strings.TrimSpace(author)
+				// Remove "and" from the last author
+				author = strings.TrimPrefix(author, "and ")
+				if author != "" {
+					authors = append(authors, author)
 				}
 			}
 		}
