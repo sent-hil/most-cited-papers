@@ -19,7 +19,7 @@ function updateURL(searchQuery, page) {
     } else {
         url.searchParams.delete('q');
     }
-    if (page && page > 1) {
+    if (page > 1) {
         url.searchParams.set('page', page);
     } else {
         url.searchParams.delete('page');
@@ -36,10 +36,15 @@ function setupAbstractExpansion() {
         const query = new URLSearchParams(window.location.search).get('q');
 
         if (button) {
+            // Store initial text for collapsing
+            const initialText = firstSentence.textContent.split('.')[0] + '.';
+            firstSentence.textContent = initialText;
+            button.textContent = '...';
+
             button.addEventListener('click', function() {
                 if (firstSentence.textContent === fullText) {
                     // Collapse - show first sentence and ...
-                    firstSentence.textContent = firstSentence.textContent.split('.')[0] + '.';
+                    firstSentence.textContent = initialText;
                     button.textContent = '...';
                 } else {
                     // Expand - show full text with highlighting
@@ -86,7 +91,7 @@ function performSearch(query) {
     tbody.innerHTML = '<tr><td colspan="3" class="px-4 py-3 text-center">Loading...</td></tr>';
 
     // Fetch data from API
-    fetch(`/api/papers?q=${encodeURIComponent(query)}&page=1`)
+    return fetch(`/api/papers?q=${encodeURIComponent(query)}&page=1`)
         .then(response => response.json())
         .then(data => {
             // Update table body
@@ -217,3 +222,12 @@ document.addEventListener('DOMContentLoaded', function() {
         performSearch(query);
     });
 });
+
+// Export functions for testing
+module.exports = {
+    highlightText,
+    updateURL,
+    setupAbstractExpansion,
+    performSearch,
+    debounce
+};
