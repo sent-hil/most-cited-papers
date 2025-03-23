@@ -268,9 +268,6 @@ func (s *UIServer) getPapers(page, pageSize int, searchQuery string) ([]PaperVie
 		if arxivSummary.Valid {
 			paper.ArxivSummary = arxivSummary.String
 			paper.FirstSentence = getFirstSentence(arxivSummary.String)
-			log.Printf("Found abstract for paper: %s (length: %d)", paper.Title, len(paper.ArxivSummary))
-		} else {
-			log.Printf("No abstract found for paper: %s", paper.Title)
 		}
 
 		if citations.Valid {
