@@ -12,8 +12,7 @@ A tool to collect citation counts for scientific papers from Google Scholar. And
 1. Install Go dependencies:
 
 ```bash
-go get github.com/PuerkitoBio/goquery
-go get github.com/mattn/go-sqlite3
+go mod tidy
 ```
 
 ## Usage
