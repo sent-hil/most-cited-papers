@@ -71,6 +71,13 @@ Run node tests:
 npm test
 ```
 
+### Docker
+
+```
+docker build -t most-cited-papers .
+docker run -p 9001:9001 -v ./paper_cache.db:/data/paper_cache.db --name most-cited-papers most-cited-papers:latest
+```
+
 ## Notes
 
 - The database caches citation counts to avoid repeated requests.
